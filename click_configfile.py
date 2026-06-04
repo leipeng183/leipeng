@@ -13,8 +13,101 @@ from fnmatch import fnmatch
 import os.path
 import inspect
 import configparser     # -- USE BACKPORT FOR: Python2
-from click.types import convert_type
 import six
+
+try:
+    from click.types import convert_type
+except ImportError:
+    class BadParameter(ValueError):
+        pass
+
+    class _ParamType(object):
+        name = "value"
+
+        def fail(self, value):
+            raise BadParameter("Could not convert %r to %s" % (value, self.name))
+
+    class StringParamType(_ParamType):
+        name = "text"
+
+        def convert(self, value, param, ctx=None):
+            if value is None:
+                return ""
+            return value if isinstance(value, six.string_types) else str(value)
+
+    class IntParamType(_ParamType):
+        name = "integer"
+
+        def convert(self, value, param, ctx=None):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                self.fail(value)
+
+    class FloatParamType(_ParamType):
+        name = "float"
+
+        def convert(self, value, param, ctx=None):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                self.fail(value)
+
+    class BoolParamType(_ParamType):
+        name = "boolean"
+        truth_map = {
+            "1": True,
+            "true": True,
+            "t": True,
+            "yes": True,
+            "y": True,
+            "on": True,
+            "0": False,
+            "false": False,
+            "f": False,
+            "no": False,
+            "n": False,
+            "off": False,
+        }
+
+        def convert(self, value, param, ctx=None):
+            if isinstance(value, bool):
+                return value
+
+            normalized = str(value).strip().lower()
+            if normalized in self.truth_map:
+                return self.truth_map[normalized]
+            self.fail(value)
+
+    class FuncParamType(_ParamType):
+        def __init__(self, func):
+            self.func = func
+            self.name = getattr(func, "__name__", "value")
+
+        def convert(self, value, param, ctx=None):
+            try:
+                return self.func(value)
+            except (TypeError, ValueError):
+                self.fail(value)
+
+    def convert_type(type, default=None):
+        if hasattr(type, "convert"):
+            return type
+
+        if type is None and default is not None:
+            type = default.__class__
+
+        if type in (None, str):
+            return StringParamType()
+        if type is int:
+            return IntParamType()
+        if type is float:
+            return FloatParamType()
+        if type is bool:
+            return BoolParamType()
+        if callable(type):
+            return FuncParamType(type)
+        return type
 
 # -----------------------------------------------------------------------------
 # PACKAGE META DATA:
@@ -497,3 +590,7 @@ class ConfigFileReader(object):
             if section_storage is None:
                 section_storage = storage[storage_name] = dict()
         return section_storage
+
+
+if __name__ == "__main__":
+    print("click_configfile.py 运行成功，当前版本: %s" % __version__)
