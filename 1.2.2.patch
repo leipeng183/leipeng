@@ -1,0 +1,122 @@
+diff --git a/click_configfile.py b/click_configfile.py
+index 77fec8a..db1dbe7 100644
+--- a/click_configfile.py
++++ b/click_configfile.py
+@@ -14,6 +14,7 @@ import os.path
+ import inspect
+ import configparser     # -- USE BACKPORT FOR: Python2
+ import six
++import logging
+ 
+ try:
+     from click.types import convert_type
+@@ -315,7 +316,7 @@ def select_params_from_section_schema(section_schema, param_class=Param,
+             yield (name, value)
+ 
+ 
+-def parse_config_section(config_section, section_schema):
++def parse_config_section(config_section, section_schema, strict=True, filename=None):
+     """Parse a config file section (INI file) by using its schema/description.
+ 
+     .. sourcecode::
+@@ -349,6 +350,8 @@ def parse_config_section(config_section, section_schema):
+ 
+     :param config_section:  Config section to parse
+     :param section_schema:  Schema/description of config section (w/ Param).
++    :param strict:          If True, fail on conversion errors. If False, log warning and skip.
++    :param filename:        Filename of the config section (for diagnostics).
+     :return: Retrieved data, values converted to described types.
+     :raises: click.BadParameter, if conversion error occurs.
+     """
+@@ -360,7 +363,41 @@ def parse_config_section(config_section, section_schema):
+                 continue
+             value = param.default
+         else:
+-            value = param.parse(value)
++            try:
++                value = param.parse(value)
++            except Exception as e:
++                import sys
++                exc_type, exc_value, exc_traceback = sys.exc_info()
++                
++                expected_type = getattr(param.type, "name", str(type(param.type)))
++                raw_value = config_section.get(name)
++                msg = (
++                    "Error parsing config:\n"
++                    "  File:       %s\n"
++                    "  Section:    [%s]\n"
++                    "  Parameter:  %s\n"
++                    "  Raw value:  %r\n"
++                    "  Expected:   %s\n"
++                    "  Reason:     %s"
++                ) % (
++                    filename or "unknown",
++                    config_section.name,
++                    name,
++                    raw_value,
++                    expected_type,
++                    str(e)
++                )
++                
++                if strict:
++                    try:
++                        new_exc = exc_type(msg)
++                    except Exception:
++                        new_exc = ValueError(msg)
++                    six.reraise(type(new_exc), new_exc, exc_traceback)
++                else:
++                    logging.warning(msg)
++                    continue
++
+         # -- DIAGNOSTICS:
+         # print("  %s = %s" % (name, repr(value)))
+         storage[name] = value
+@@ -475,9 +512,18 @@ class ConfigFileReader(object):
+     # -- GENERIC PART:
+     # Uses declarative specification from above (config_files, config_sections, ...)
+     @classmethod
+-    def read_config(cls):
++    def read_config(cls, strict=True):
+         configfile_names = list(
+             generate_configfile_names(cls.config_files, cls.config_searchpath))
++            
++        section_to_files = {}
++        for fname in configfile_names:
++            tmp_parser = configparser.ConfigParser()
++            tmp_parser.optionxform = str
++            if tmp_parser.read(fname):
++                for sec in tmp_parser.sections():
++                    section_to_files.setdefault(sec, []).append(fname)
++                    
+         parser = configparser.ConfigParser()
+         parser.optionxform = str
+         parser.read(configfile_names)
+@@ -491,7 +537,9 @@ class ConfigFileReader(object):
+                                                    cls.config_sections):
+             # print("PROCESS-SECTION: %s" % section_name)
+             config_section = parser[section_name]
+-            cls.process_config_section(config_section, storage)
++            files = section_to_files.get(section_name, [])
++            filename = ", ".join(files) if files else "unknown"
++            cls.process_config_section(config_section, storage, strict=strict, filename=filename)
+         return storage
+ 
+     @classmethod
+@@ -519,7 +567,7 @@ class ConfigFileReader(object):
+     # -- SPECIFIC PART:
+     # Specifies which schema to use and where data should be stored.
+     @classmethod
+-    def process_config_section(cls, config_section, storage):
++    def process_config_section(cls, config_section, storage, strict=True, filename=None):
+         """Process the config section and store the extracted data in
+         the param:`storage` (as outgoing param).
+         """
+@@ -535,7 +583,7 @@ class ConfigFileReader(object):
+ 
+         # -- PARSE AND STORE CONFIG SECTION:
+         section_storage = cls.select_storage_for(config_section.name, storage)
+-        section_data = parse_config_section(config_section, schema)
++        section_data = parse_config_section(config_section, schema, strict=strict, filename=filename)
+         section_storage.update(section_data)
+ 
+     @classmethod
